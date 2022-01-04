@@ -9,89 +9,65 @@
 #include <QSettings>
 #include <QFileSystemModel>
 #include <vsgXchange/all.h>
+#include "SceneObjectVisitor.h"
+#include <vsg/nodes/MatrixTransform.h>
 
-class Topology;
 
-class DatabaseException : public QException
+namespace route {
+    class Topology;
+}
+
+class Manipulator;
+
+class DatabaseException
 {
 public:
     DatabaseException(const QString &path)
         : err_path(path)
     {
     }
-    void raise() const override { throw *this; }
-    DatabaseException *clone() const override { return new DatabaseException(*this); }
     QString getErrPath() { return err_path; }
 private:
     QString err_path;
 };
 
 
-
 class DatabaseManager : public QObject
 {
     Q_OBJECT
 public:
-    DatabaseManager(const QString &path, QUndoStack *stack, vsg::ref_ptr<vsg::Builder> in_builder, QFileSystemModel *model, QObject *parent = nullptr);
+    DatabaseManager(QString path, QUndoStack *stack, vsg::ref_ptr<vsg::Builder> in_builder, QObject *parent = nullptr);
     virtual ~DatabaseManager();
 
-    vsg::ref_ptr<vsg::Node> getDatabase() const noexcept { return database; }
-    SceneModel *getTilesModel() noexcept { return tilesModel; }
-
-    //vsg::ref_ptr<vsg::Node> read(const QString &path) const;
-
-    enum ObjectType
-    {
-        Obj,
-        Trk,
-        TrkObj
-    };
-    struct Loaded
-    {
-        QString path = "";
-        ObjectType type = Obj;
-        vsg::ref_ptr<vsg::Node> node;
-        explicit operator bool() { return node.valid(); }
-    };
+    vsg::ref_ptr<vsg::Group> getRoot() const noexcept { return _root; }
+    vsg::ref_ptr<vsg::Builder> getBuilder() const noexcept { return _builder; }
+    void compile(vsg::ref_ptr<vsg::Node> subgraph) { _builder->compile(subgraph); }
+    void push(QUndoCommand *cmd) { _undoStack->push(cmd); }
+    vsg::ref_ptr<vsg::Group> getDatabase() const noexcept { return _database; }
+    SceneModel *loadTiles(vsg::ref_ptr<vsg::CopyAndReleaseBuffer> copyBuffer, double tileLOD, double pointsLOD, float size);
+    SceneModel *getTilesModel() noexcept { return _tilesModel; }
 
 public slots:
     void writeTiles() noexcept;
-    void addObject(vsg::dvec3 position, const QModelIndex &index) noexcept;
-    void addTrack(SceneTrajectory *traj, double position = 0.0) noexcept;
-    void activeGroupChanged(const QModelIndex &index) noexcept;
-    void activeFileChanged(const QItemSelection &selected, const QItemSelection &) noexcept;
-    void loaderButton(bool checked) noexcept;
+
 signals:
     void sendStatusText(const QString &message, int timeout);
 
 private:
+    vsg::ref_ptr<vsg::Builder> _builder;
 
-    QPair<QString, vsg::ref_ptr<vsg::Node>> concurrentRead(const QString &path);
+    vsg::ref_ptr<vsg::Group> _root;
+    vsg::ref_ptr<vsg::Group> _database;
+    //vsg::ref_ptr<vsg::Group> tiles;
+    std::map<vsg::Node*, const QString> _files;
 
-    Trajectory *createTrajectory(const Loaded &loaded, Trajectory *prev = nullptr);
+    QString _databasePath;
 
-    vsg::ref_ptr<vsg::Group> database;
-    std::string databasePath;
+    vsg::ref_ptr<route::Topology> _topology;
 
-    vsg::ref_ptr<Topology> topology;
+    SceneModel *_tilesModel;
 
-    vsg::ref_ptr<vsg::Builder> builder;
-
-    QModelIndex activeGroup;
-
-    Loaded loaded;
-
-    QFileSystemModel *fsmodel;
-
-    SceneModel *tilesModel;
-
-    bool loadToSelected = false;
-
-    bool placeLoader = false;
-
-    QDir modelsDir;
-
-    QUndoStack *undoStack;
+    QUndoStack *_undoStack;
 };
 
 #endif // DATABASEMANAGER_H

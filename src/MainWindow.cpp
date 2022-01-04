@@ -8,37 +8,28 @@
 #include <QMessageBox>
 #include "AddDialog.h"
 #include "undo-redo.h"
-#include "ObjectModel.h"
 #include "LambdaVisitor.h"
-#include "TilesVisitor.h"
+#include "ContentManager.h"
+#include "ObjectPropertiesEditor.h"
 
 
 MainWindow::MainWindow(QString routePath, QString skybox, QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
+    , pathDB(routePath)
 {
 
     ui->setupUi(this);
 
-    undoStack = new QUndoStack(this);
-
     constructWidgets();
 
-    auto fsmodel = new QFileSystemModel(this);
-    ui->fileView->setModel(fsmodel);
-    ui->fileView->setRootIndex(fsmodel->setRootPath(qgetenv("RRS2_ROOT") + QDir::separator().toLatin1() + "objects"));
+    undoStack = new QUndoStack(this);
+    database = new DatabaseManager(pathDB, undoStack, builder, this);
 
-    database = new DatabaseManager(routePath, undoStack, builder, fsmodel, this);
-    sorter->setSourceModel(database->getTilesModel());
-    scene->addChild(database->getDatabase());
-
-    connect(sorter, &TilesSorter::selectionChanged, database, &DatabaseManager::activeGroupChanged);
-    connect(ui->fileView->selectionModel(), &QItemSelectionModel::selectionChanged, database, &DatabaseManager::activeFileChanged);
+    initializeTools();
 
     undoView = new QUndoView(undoStack, ui->tabWidget);
     ui->tabWidget->addTab(undoView, tr("Действия"));
-
-    connect(ui->addObjectButt, &QPushButton::pressed, this, &MainWindow::addObject);
 
     connect(ui->actionUndo, &QAction::triggered, undoStack, &QUndoStack::undo);
     connect(ui->actionRedo, &QAction::triggered, undoStack, &QUndoStack::redo);
@@ -53,6 +44,34 @@ MainWindow::MainWindow(QString routePath, QString skybox, QWidget *parent)
     });
 
 }
+
+
+void MainWindow::initializeTools()
+{
+    QSettings settings(ORGANIZATION_NAME, APPLICATION_NAME);
+
+    toolbox = new QToolBox(ui->splitter);
+    ui->splitter->addWidget(toolbox);
+
+    auto ope = ObjectPropertiesEditor::create(database, toolbox);
+    toolbox->addItem(ope, tr("Выбрать и переместить объекты"));
+    auto cm = new ContentManager(database, qgetenv("RRS2_ROOT") + QDir::separator().toLatin1() + "objects", toolbox);
+    toolbox->addItem(cm, tr("Добавить объект"));
+
+    database->getRoot()->addChild(ope);
+    ope->ref();
+
+    connect(sorter, &TilesSorter::selectionChanged, ope, &ObjectPropertiesEditor::selectObject);
+    connect(ope, &Tool::objectClicked, sorter, &TilesSorter::select);
+    connect(ope, &Tool::deselect, ui->tilesView->selectionModel(), &QItemSelectionModel::clearSelection);
+    connect(sorter, &TilesSorter::frontSelectionChanged, cm, &ContentManager::activeGroupChanged);
+}
+
+void MainWindow::intersection(const FindNode& isection)
+{
+    qobject_cast<Tool*>(toolbox->currentWidget())->intersection(isection);
+}
+
 QWindow* MainWindow::initilizeVSGwindow()
 {
     auto options = vsg::Options::create();
@@ -63,15 +82,12 @@ QWindow* MainWindow::initilizeVSGwindow()
     options->add(vsgXchange::all::create());
     options->objectCache = vsg::ObjectCache::create();
 
-    vsg::RegisterWithObjectFactoryProxy<SceneObject>();
-    vsg::RegisterWithObjectFactoryProxy<SingleLoader>();
-    vsg::RegisterWithObjectFactoryProxy<StraitTrack>();
-    vsg::RegisterWithObjectFactoryProxy<CurvedTrack>();
-    vsg::RegisterWithObjectFactoryProxy<SceneTrajectory>();
-    vsg::RegisterWithObjectFactoryProxy<TrackSection>();
-    vsg::RegisterWithObjectFactoryProxy<Topology>();
-    vsg::RegisterWithObjectFactoryProxy<Trajectory>();
-    //vsg::RegisterWithObjectFactoryProxy<>();
+    vsg::RegisterWithObjectFactoryProxy<route::SceneObject>();
+    vsg::RegisterWithObjectFactoryProxy<route::SingleLoader>();
+    vsg::RegisterWithObjectFactoryProxy<route::SceneTrajectory>();
+    vsg::RegisterWithObjectFactoryProxy<route::Topology>();
+    vsg::RegisterWithObjectFactoryProxy<route::SplineTrajectory>();
+    //vsg::RegisterWithObjectFactoryProxy<route::TerrainPoint>();
 
     builder = vsg::Builder::create();
     builder->options = options;
@@ -79,12 +95,11 @@ QWindow* MainWindow::initilizeVSGwindow()
     auto windowTraits = vsg::WindowTraits::create();
     windowTraits->windowTitle = APPLICATION_NAME;
 
-    scene = vsg::Group::create();
-
-    SceneModel *scenemodel = new SceneModel(scene, this);
+    /*
+    SceneModel *scenemodel = new SceneModel(database->getRoot(), this);
     ui->sceneTreeView->setModel(scenemodel);
     ui->sceneTreeView->expandAll();
-
+*/
     viewerWindow = new vsgQt::ViewerWindow();
     viewerWindow->traits = windowTraits;
     viewerWindow->viewer = vsg::Viewer::create();
@@ -100,18 +115,30 @@ QWindow* MainWindow::initilizeVSGwindow()
 
         viewer->addWindow(window);
 
+        auto memoryBufferPools = vsg::MemoryBufferPools::create("Staging_MemoryBufferPool", vsg::ref_ptr<vsg::Device>(window->getOrCreateDevice()));
+        auto copyBufferCmd = vsg::CopyAndReleaseBuffer::create(memoryBufferPools);
+
+        QSettings settings(ORGANIZATION_NAME, APPLICATION_NAME);
+
+        auto psize = settings.value("POINTSIZE", 3).toInt();
+        auto lodp = settings.value("LOD_POINTS", 0.1).toDouble();
+        auto lodt = settings.value("LOD_TILES", 0.5).toDouble();
+
+        sorter->setSourceModel(database->loadTiles(copyBufferCmd, lodt, lodp, psize));
+
         // compute the bounds of the scene graph to help position camera
         vsg::ComputeBounds computeBounds;
-        scene->accept(computeBounds);
+        computeBounds.traversalMask = route::SceneObjects | route::Tiles;
+        database->getRoot()->accept(computeBounds);
         vsg::dvec3 centre = (computeBounds.bounds.min + computeBounds.bounds.max) * 0.5;
         double radius = vsg::length(computeBounds.bounds.max - computeBounds.bounds.min) * 0.6;
 
-        QSettings settings(ORGANIZATION_NAME, APPLICATION_NAME);
+
         auto horizonMountainHeight = settings.value("HMH", 0.0).toDouble();
         auto nearFarRatio = settings.value("NFR", 0.0001).toDouble();
 
         // set up the camera
-        auto lookAt = vsg::LookAt::create(centre + vsg::dvec3(0.0, -radius * 3.5, 0.0), centre, vsg::dvec3(0.0, 0.0, 1.0));
+        auto lookAt = vsg::LookAt::create(centre + (vsg::normalize(centre)*10000.0), centre, vsg::dvec3(1.0, 0.0, 0.0));
 
         vsg::ref_ptr<vsg::ProjectionMatrix> perspective;
 
@@ -130,22 +157,17 @@ QWindow* MainWindow::initilizeVSGwindow()
         else
             return false;
 
-        auto objectModel = new ObjectModel(ellipsoidModel, undoStack);
-
-        ui->objectView->setModel(objectModel);
-
         auto camera = vsg::Camera::create(perspective, lookAt, vsg::ViewportState::create(window->extent2D()));
 
         // add close handler to respond the close window button and pressing escape
         viewer->addEventHandler(vsg::CloseHandler::create(viewer));
 
-        auto memoryBufferPools = vsg::MemoryBufferPools::create("Staging_MemoryBufferPool", vsg::ref_ptr<vsg::Device>(window->getOrCreateDevice()));
-        auto copyBufferCmd = vsg::CopyAndReleaseBuffer::create(memoryBufferPools);
+
 
         // setup command graph to copy the image data each frame then rendering the scene graph
         auto grahics_commandGraph = vsg::CommandGraph::create(window);
         grahics_commandGraph->addChild(copyBufferCmd);
-        grahics_commandGraph->addChild(vsg::createRenderGraphForView(window, camera, scene));
+        grahics_commandGraph->addChild(vsg::createRenderGraphForView(window, camera, database->getRoot()));
 
         auto addBins = [&](vsg::View& view)
         {
@@ -156,10 +178,10 @@ QWindow* MainWindow::initilizeVSGwindow()
 
         grahics_commandGraph->accept(lv);
 
-        // add trackball to enable mouse driven camera view control.
-        auto manipulator = Manipulator::create(camera, ellipsoidModel, builder, scene, copyBufferCmd, undoStack, database->getTilesModel(), this);
-
         builder->setup(window, camera->viewportState);
+
+        // add trackball to enable mouse driven camera view control.
+        auto manipulator = Manipulator::create(camera, ellipsoidModel, database, this);
 
         viewer->addEventHandler(manipulator);
 
@@ -167,17 +189,11 @@ QWindow* MainWindow::initilizeVSGwindow()
 
         viewer->compile();
 
-        manipulator->setPager(viewer->recordAndSubmitTasks.front()->databasePager);
-
-        connect(ui->loaderButton, &QPushButton::toggled, database, &DatabaseManager::loaderButton);
-
-        connect(sorter, &TilesSorter::selectionChanged, objectModel, &ObjectModel::selectObject);
-
-        connect(ui->modeBox, &QComboBox::currentIndexChanged, manipulator, &Manipulator::setMode);
         connect(ui->actionSave, &QAction::triggered, database, &DatabaseManager::writeTiles);
 
-        connect(manipulator.get(), &Manipulator::objectClicked, sorter, &TilesSorter::select);
-        connect(manipulator.get(), &Manipulator::expand, sorter, &TilesSorter::expand);
+        connect(sorter, &TilesSorter::doubleClicked, manipulator.get(), &Manipulator::moveToObject);
+
+        connect(manipulator.get(), &Manipulator::sendIntersection, this, &MainWindow::intersection);
 
         connect(manipulator.get(), &Manipulator::sendPos, [this](const vsg::dvec3 &pos)
         {
@@ -199,9 +215,7 @@ QWindow* MainWindow::initilizeVSGwindow()
             manipulator->setLatLongAlt(vsg::dvec3(ui->cursorLat->value(), ui->cursorLon->value(), value));
         });
 
-        connect(manipulator.get(), &Manipulator::addRequest, database, &DatabaseManager::addObject);
-        connect(manipulator.get(), &Manipulator::addTrackRequest, database, &DatabaseManager::addTrack);
-        connect(sorter, &TilesSorter::doubleClicked, manipulator, &Manipulator::selectObject);
+        connect(sorter, &TilesSorter::doubleClicked, manipulator.get(), &Manipulator::moveToObject);
 
         return true;
     };
@@ -224,7 +238,7 @@ QWindow* MainWindow::initilizeVSGwindow()
     };
     return viewerWindow;
 }
-
+/*
 void MainWindow::addObject()
 {
     const auto selectedIndexes = ui->tilesView->selectionModel()->selectedIndexes();
@@ -237,8 +251,8 @@ void MainWindow::addObject()
         switch( dialog.exec() ) {
         case QDialog::Accepted:
         {
-            if(auto add = dialog.constructNode(); add)
-                undoStack->push(new AddNode(database->getTilesModel(), sorter->mapToSource(selectedIndexes.front()), add));
+            //if(auto add = dialog.constructNode(); add)
+                //undoStack->push(new AddNode(database->getTilesModel(), sorter->mapToSource(selectedIndexes.front()), add));
             break;
         }
         case QDialog::Rejected:
@@ -251,54 +265,14 @@ void MainWindow::addObject()
         msgBox.setText("Пожалуйста, выберите группу сначала");
         msgBox.exec();
     }
-}
-/*
-DatabaseManager *MainWindow::openDialog()
-{
-    if (const auto file = QFileDialog::getOpenFileName(this, tr("Открыть базу данных"), qgetenv("RRS2_ROOT") + QDir::separator().toLatin1() + "routes"); !file.isEmpty())
-    {
-        try {
-            auto db = new DatabaseManager(file, undoStack, builder, fsmodel);
-            return db;
+}*/
 
-        }  catch (DatabaseException &ex) {
-            auto errorMessageDialog = new QErrorMessage(this);
-            errorMessageDialog->showMessage(ex.getErrPath());
-        }
-    }
-    return nullptr;
-}
-
-void MainWindow::openRoute()
-{
-    if(auto manager = openDialog(); manager)
-    {
-        scene->children.clear();
-        database.reset(manager);
-        sorter->setSourceModel(manager->getTilesModel());
-        scene->addChild(manager->getDatabase());
-
-        connect(sorter, &TilesSorter::selectionChanged, database.get(), &DatabaseManager::activeGroupChanged);
-        connect(ui->fileView->selectionModel(), &QItemSelectionModel::selectionChanged, database.get(), &DatabaseManager::activeFileChanged);
-
-        viewerWindow->viewer = vsg::Viewer::create();
-        viewerWindow->initializeCallback(*viewerWindow, embedded->width(), embedded->height());
-    }
-}
-
-void MainWindow::receiveData(vsg::ref_ptr<vsg::Data> buffer, vsg::ref_ptr<vsg::BufferInfo> info)
-{
-    copyBufferCmd->copy(buffer, info);
-}
-*/
-void MainWindow::pushCommand(QUndoCommand *command)
-{
-    undoStack->push(command);
-}
 
 void MainWindow::constructWidgets()
 {
     embedded = QWidget::createWindowContainer(initilizeVSGwindow(), ui->centralsplitter);
+
+
 
     sorter = new TilesSorter(this);
     //sorter->setSourceModel();

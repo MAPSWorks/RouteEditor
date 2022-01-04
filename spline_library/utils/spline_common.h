@@ -4,6 +4,8 @@
 #include <vector>
 #include <cmath>
 
+#include <vsg/maths/vec3.h>
+
 namespace SplineCommon
 {
     //compute the T values for the given points, with the given alpha.
@@ -47,7 +49,7 @@ floating_t SplineCommon::computeTDiff(InterpolationType p1, InterpolationType p2
     }
     else
     {
-        auto distanceSq = (p1 - p2).lengthSquared();
+        auto distanceSq = vsg::length2(p1 - p2);
 
         //if these points are right on top of each other, don't bother with the power calculation
         if(distanceSq < .0001)
