@@ -1,12 +1,12 @@
 #include "StartDialog.h"
+#include "route.h"
 #include "ui_StartDialog.h"
 #include <QSettings>
 #include <vsg/io/read.h>
 #include <vsgXchange/all.h>
 #include "Constants.h"
-#include "signals.h"
-#include "interlocking.h"
-#include "topology.h"
+#include "Register.h"
+#include <execution>
 
 StartDialog::StartDialog(QWidget *parent) :
     QDialog(parent),
@@ -21,7 +21,7 @@ StartDialog::StartDialog(QWidget *parent) :
     // add vsgXchange's support for reading and writing 3rd party file formats
     options->add(vsgXchange::all::create());
 
-    QSettings settings(app::ORGANIZATION_NAME, app::APPLICATION_NAME);
+    QSettings settings(app::ORGANIZATION_NAME, app::APP_NAME);
     auto HMH = settings.value("HMH", 1.0).toDouble();
     auto NFR = settings.value("NFR", 0.0001).toDouble();
 
@@ -47,7 +47,7 @@ StartDialog::StartDialog(QWidget *parent) :
 }
 void StartDialog::updateSettings()
 {
-    QSettings settings(app::ORGANIZATION_NAME, app::APPLICATION_NAME);
+    QSettings settings(app::ORGANIZATION_NAME, app::APP_NAME);
     settings.setValue("HMH", ui->HMHSpin->value());
     settings.setValue("NFR", ui->NFRSpin->value());
     settings.setValue("COLORS", ui->comboBox->currentIndex());
@@ -59,71 +59,34 @@ void StartDialog::updateSettings()
 
 void StartDialog::load()
 {
-    vsg::RegisterWithObjectFactoryProxy<route::SceneObject>();
-    vsg::RegisterWithObjectFactoryProxy<route::SingleLoader>();
-    vsg::RegisterWithObjectFactoryProxy<route::RailPoint>();
-    vsg::RegisterWithObjectFactoryProxy<route::RailConnector>();
-    vsg::RegisterWithObjectFactoryProxy<route::SwitchConnector>();
-
-    vsg::RegisterWithObjectFactoryProxy<signalling::Signal>();
-    vsg::RegisterWithObjectFactoryProxy<signalling::ShSignal>();
-    vsg::RegisterWithObjectFactoryProxy<signalling::Sh2Signal>();
-    vsg::RegisterWithObjectFactoryProxy<signalling::AutoBlockSignal>();
-    vsg::RegisterWithObjectFactoryProxy<signalling::StRepSignal>();
-    vsg::RegisterWithObjectFactoryProxy<signalling::RouteSignal>();
-    vsg::RegisterWithObjectFactoryProxy<signalling::RouteV2Signal>();
-
-    vsg::RegisterWithObjectFactoryProxy<signalling::JunctionCommand>();
-    vsg::RegisterWithObjectFactoryProxy<signalling::SignalCommand>();
-    vsg::RegisterWithObjectFactoryProxy<signalling::RouteCommand>();
-    vsg::RegisterWithObjectFactoryProxy<signalling::Route>();
-    vsg::RegisterWithObjectFactoryProxy<signalling::Routes>();
-    vsg::RegisterWithObjectFactoryProxy<signalling::Station>();
-
-    vsg::RegisterWithObjectFactoryProxy<route::StraitTrajectory>();
-    vsg::RegisterWithObjectFactoryProxy<route::SplineTrajectory>();
-    vsg::RegisterWithObjectFactoryProxy<route::PointsTrajectory>();
-    vsg::RegisterWithObjectFactoryProxy<route::Junction>();
-
-    vsg::RegisterWithObjectFactoryProxy<PointsGroup>();
-    vsg::RegisterWithObjectFactoryProxy<route::Topology>();
-
-
-    QFutureWatcher<vsg::ref_ptr<vsg::Node>> loadWatcher;
-    connect(&loadWatcher, &QFutureWatcher<vsg::ref_ptr<vsg::Node>>::progressValueChanged, ui->progressBar, &QProgressBar::setValue);
-    connect(&loadWatcher, &QFutureWatcher<vsg::ref_ptr<vsg::Node>>::progressRangeChanged, ui->progressBar, &QProgressBar::setRange);
-    connect(ui->buttonBox, &QDialogButtonBox::rejected, &loadWatcher, &QFutureWatcher<vsg::ref_ptr<vsg::Node>>::cancel);
-
-    QFutureWatcher<vsg::ref_ptr<DatabaseManager>> dbWatcher;
-    connect(&dbWatcher, &QFutureWatcher<vsg::ref_ptr<DatabaseManager>>::finished, this, &StartDialog::accept);
-    connect(ui->buttonBox, &QDialogButtonBox::rejected, &dbWatcher, &QFutureWatcher<vsg::ref_ptr<DatabaseManager>>::cancel);
+    app::registerObjectFactoy();
 
     auto selected = ui->routeTree->selectionModel()->selectedRows();
+    std::vector<vsg::ref_ptr<route::Tile>> loaded(selected.size());
 
     auto load = [this](const QModelIndex &idx)
     {
         auto path = routeModel->filePath(idx);
-        auto node = vsg::read_cast<vsg::Node>(path.toStdString(), options);
+        auto node = vsg::read_cast<route::Tile>(path.toStdString(), options);
         if(!node)
             throw DatabaseException(path);
+        node->terrain->properties.dataVariance = vsg::DYNAMIC_DATA;
+        node->texture->properties.dataVariance = vsg::DYNAMIC_DATA;
         node->setValue(app::PATH, path.toStdString());
         return node;
     };
-    auto loadFuture = QtConcurrent::mapped(selected, load);
-    database = loadFuture.then([fi=routeModel->fileInfo(selected.front()), options=options](QFuture<vsg::ref_ptr<vsg::Node>> f)
-    {
-        auto databasePath = fi.absolutePath() + QDir::separator() + "database." + fi.suffix();
-        auto database = vsg::read_cast<vsg::Group>(databasePath.toStdString(), options);
-        if (!database)
-            throw (DatabaseException(databasePath));
-        database->setValue(app::PATH, databasePath.toStdString());
-        auto group = vsg::Group::create();
-        std::move(f.begin(), f.end(), std::back_inserter(group->children));
-        return DatabaseManager::create(database, group, options);
-    });
+    std::transform(std::execution::par, selected.begin(), selected.end(), loaded.begin(), load);
 
-    loadWatcher.setFuture(loadFuture);
-    dbWatcher.setFuture(database);
+    auto fi = routeModel->fileInfo(selected.front());
+    auto databasePath = fi.absolutePath() + QDir::separator() + "database." + fi.suffix();
+    auto route = vsg::read_cast<route::Route>(databasePath.toStdString(), options);
+    if (!route)
+        throw (DatabaseException(databasePath));
+    route->setValue(app::PATH, databasePath.toStdString());
+    for (const auto &ptr : loaded) {
+        route->tiles->addChild(ptr);
+    }
+    database = DatabaseManager::create(route, options);
 }
 
 StartDialog::~StartDialog()

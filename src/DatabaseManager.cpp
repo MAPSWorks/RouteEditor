@@ -1,34 +1,32 @@
 #include "DatabaseManager.h"
 #include "LambdaVisitor.h"
-#include "vsgGIS/TileDatabase.h"
-#include <QtConcurrent/QtConcurrent>
+#include <execution>
 #include <QInputDialog>
+#include <vsg/app/Viewer.h>
+#include <vsg/nodes/VertexIndexDraw.h>
+#include <vsg/io/write.h>
 #include "undo-redo.h"
 #include "topology.h"
-#include "ParentVisitor.h"
 #include <QRegularExpression>
 
-DatabaseManager::DatabaseManager(vsg::ref_ptr<vsg::Group> database, vsg::ref_ptr<vsg::Group> nodes, vsg::ref_ptr<vsg::Options> options)
-  : root(nodes)
-  , _database(database)
+DatabaseManager::DatabaseManager(vsg::ref_ptr<route::Route> in_route, vsg::ref_ptr<vsg::Options> options)
+  : root(vsg::Group::create())
+  , route(in_route)
 {
     builder = vsg::Builder::create();
     builder->options = options;
 
-    topology = _database->getObject<route::Topology>(app::TOPOLOGY);
-    if(!topology)
+    root->addChild(route);
+
+    auto fixPaths = [](vsg::PagedLOD& plod)
     {
-        topology = route::Topology::create();
-        _database->setObject(app::TOPOLOGY, topology);
-    }
+        QFileInfo fi(plod.filename.c_str());
+        plod.filename = fi.fileName().toStdString();
+    };
+    LambdaVisitor<decltype (fixPaths), vsg::PagedLOD> fp(fixPaths);
+    in_route->plods->accept(fp);
 
-    auto modelroot = vsg::Group::create();
-    modelroot->addChild(nodes);
-    modelroot->addChild(database);
-
-    vsg::visit<ParentIndexer>(modelroot);
-
-    tilesModel = new SceneModel(modelroot, builder, undoStack);
+    tilesModel = new SceneModel(route, builder);
 }
 DatabaseManager::~DatabaseManager()
 {
@@ -52,7 +50,7 @@ void DatabaseManager::setViewer(vsg::ref_ptr<vsg::Viewer> viewer)
     vsg::GeometryInfo gi;
     _stdWireBox = builder->createBox(gi, si);
 
-    builder->options->setObject(app::WIREFRAME, _stdWireBox.get());
+    builder->options->setObject(app::WIREFRAME, _stdWireBox);
 
     _stdAxis = vsg::Group::create();
 
@@ -72,8 +70,6 @@ void DatabaseManager::setViewer(vsg::ref_ptr<vsg::Viewer> viewer)
     gi.color = vsg::vec4(0.0f, 0.0f, 1.0f, 1.0f);
     _stdAxis->addChild(builder->createBox(gi));
 }
-
-vsg::ref_ptr<vsg::Group> DatabaseManager::getDatabase() const noexcept { return _database; }
 
 vsg::ref_ptr<vsg::Node> DatabaseManager::getStdWireBox()
 {
@@ -98,40 +94,27 @@ void DatabaseManager::writeTiles()
         object.removeObject("bound");
     };
     LambdaVisitor<decltype (removeBounds), vsg::VertexIndexDraw> lv(removeBounds);
-
-    auto removeParents = [](vsg::Node& node)
-    {
-        node.removeObject(app::PARENT);
-    };
-    LambdaVisitor<decltype (removeParents), vsg::Node> lvmp(removeParents);
-
     tilesModel->getRoot()->accept(lv);
-    tilesModel->getRoot()->accept(lvmp);
+
+    vsg::visit<route::SetStatic>(root);
 
     std::string path;
-    if(!_database->getValue(app::PATH, path))
+    if(!route->getValue(app::PATH, path))
         throw DatabaseException(QObject::tr("Ошибка записи"));
 
-    vsg::write(_database, path, builder->options);
+    vsg::write(route, path, builder->options);
 
     auto write = [options=builder->options](const auto node)
     {
         std::string path;
         if(!node->getValue(app::PATH, path))
             return;
-        auto ext = vsg::lowerCaseFileExtension(path);
-        if (ext == ".vsgt" || ext == ".vsgb")
-        {
-            vsg::VSG rw;
-            rw.write(node, path, options);
-        }
+        vsg::write(node, path, options);
     };
 
-    auto future = QtConcurrent::map(root->children.begin(), root->children.end(), write);
-    future.waitForFinished();
+    std::for_each(std::execution::par, route->tiles->childrenObjects().begin(), route->tiles->childrenObjects().end(), write);
 
     undoStack->setClean();
-    vsg::visit<ParentIndexer>(tilesModel->getRoot());
 }
 
 void DatabaseManager::compile()

@@ -1,12 +1,14 @@
 #include "Painter.h"
 #include "ui_Painter.h"
-#include <vsg/traversals/ComputeBounds.h>
+#include <vsg/utils/ComputeBounds.h>
 #include <vsg/nodes/StateGroup.h>
 #include <vsg/nodes/CullNode.h>
 #include <vsg/io/read.h>
 #include <vsg/nodes/VertexIndexDraw.h>
 #include <QImage>
 #include <QPainter>
+
+#include "tile.h"
 
 
 Painter::Painter(DatabaseManager *database, QString root, QWidget *parent) :
@@ -32,21 +34,23 @@ Painter::~Painter()
     delete ui;
 }
 
+void Painter::activeTextureChanged(const QItemSelection &selected, const QItemSelection &)
+{
+
+}
+/*
 void Painter::intersection(const FoundNodes &isection)
 {
     vsg::ref_ptr<vsg::EllipsoidModel> ellipsoidModel(_database->getDatabase()->getObject<vsg::EllipsoidModel>("EllipsoidModel"));
-    if(!isection.terrain || !ellipsoidModel)
+    if(!isection.tile || !ellipsoidModel)
         return;
 
-    route::FindTexture fdi;
-    isection.terrain->accept(fdi);
-
-    if(!fdi.imageInfo || !fdi.terrainInfo)
-        return;
+    auto &terrain = isection.tile->terrain;
+    auto &texture = isection.tile->texture;
 
     QImage::Format format;
 
-    switch (fdi.imageInfo->imageView->format) {
+    switch (texture->properties.format) {
     case VK_FORMAT_R8G8B8A8_UNORM:
         format = QImage::Format_RGBA8888;
         break;
@@ -54,24 +58,21 @@ void Painter::intersection(const FoundNodes &isection)
         return;
     }
 
-    auto data = fdi.imageInfo->imageView->image->data;
-    auto tdata = fdi.terrainInfo->imageView->image->data;
-    auto qimage = new QImage(static_cast<uchar*>(data->dataPointer()), data->width(), data->height(), format);
-
-    auto transform = tdata->getObject<vsg::doubleArray>("GeoTransform");
+    auto transform = terrain->getObject<vsg::doubleArray>("GeoTransform");
     if(!transform)
         return;
-
+    auto qimage = new QImage(static_cast<uchar*>(texture->dataPointer()), texture->width(), texture->height(), format);
+    //potential memory leak
     auto origin = vsg::dvec3(transform->at(0), transform->at(3), 0.0);
-    auto dx = transform->at(1) * tdata->width();
-    auto dy =  transform->at(5) * tdata->height();
+    auto dx = transform->at(1) * terrain->width();
+    auto dy =  transform->at(5) * terrain->height();
 
     auto lla = ellipsoidModel->convertECEFToLatLongAltitude(isection.intersection->worldIntersection);
     auto delta = lla - origin;
     auto u = delta.x / dx;
     auto v = delta.y / dy;
 
-    QPoint point(static_cast<int>(data->width() * u), static_cast<int>(data->height() * v));
+    QPoint point(static_cast<int>(texture->width() * u), static_cast<int>(texture->height() * v));
 
     QPainter p(qimage);
 
@@ -90,8 +91,12 @@ void Painter::intersection(const FoundNodes &isection)
     p.setCompositionMode(QPainter::CompositionMode_DestinationOver);
     p.drawImage(rect, _image);
 
+    texture->dirty();
 
-     _database->copyImageCmd->copy(data, fdi.imageInfo);
+    //delete qimage;
+    //terrain->dirty();
+
+     //_database->copyImageCmd->copy(texture, fdi.imageInfo);
 }
 
 void Painter::activeTextureChanged(const QItemSelection &selected, const QItemSelection &)
@@ -100,3 +105,4 @@ void Painter::activeTextureChanged(const QItemSelection &selected, const QItemSe
     auto path = _fsmodel->filePath(index);
     _image = QImage(path);
 }
+*/

@@ -8,7 +8,7 @@ int main(int argc, char *argv[])
 {
     QCoreApplication::setOrganizationName(app::ORGANIZATION_NAME);
     QCoreApplication::setOrganizationDomain(app::ORGANIZATION_DOMAIN);
-    QCoreApplication::setApplicationName(app::APPLICATION_NAME);
+    QCoreApplication::setApplicationName(app::APP_NAME);
 
     QApplication a(argc, argv);
     StartDialog dialog;
@@ -16,7 +16,7 @@ int main(int argc, char *argv[])
     {
         dialog.updateSettings();
         try {
-            MainWindow w(dialog.database.result());
+            MainWindow w(dialog.database);
             w.showMaximized();
             return a.exec();
         }  catch (DatabaseException &ex) {

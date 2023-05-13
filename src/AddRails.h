@@ -17,11 +17,10 @@ public:
     explicit AddRails(DatabaseManager *database, QString root, QWidget *parent = nullptr);
     ~AddRails();
 
-    void intersection(const FoundNodes& isection) override;
+    //void intersection(const FoundNodes& isection) override;
 
 signals:
     void sendMovingPoint(route::SceneObject *object);
-    void startMoving();
 
 private:
     //tinyobj::ObjReader loadObj(std::string path);
@@ -32,6 +31,10 @@ private:
     vsg::ref_ptr<vsg::Node> _sleeper;
 
     QFileSystemModel *_fsmodel;
+
+    // Visitor interface
+public:
+    void apply(vsg::ButtonPressEvent &buttonPress) override;
 };
 
 #endif // ADDRAILS_H

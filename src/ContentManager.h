@@ -16,8 +16,6 @@ public:
     ContentManager(DatabaseManager *database, QString root, QWidget *parent = nullptr);
     virtual ~ContentManager();
 
-    void intersection(const FoundNodes& isection) override;
-
 public slots:
     void activeGroupChanged(const QModelIndex &index);
 
@@ -25,8 +23,6 @@ signals:
     void sendObject(route::SceneObject *object);
 
 private:
-    bool addToTrack(vsg::ref_ptr<route::SceneObject> obj, const FoundNodes &isection);
-    bool addSignal(vsg::ref_ptr<route::SceneObject> obj, const FoundNodes& isection);
 
     Ui::ContentManager *ui;
 
@@ -35,6 +31,10 @@ private:
     QDir modelsDir;
 
     QFileSystemModel *_fsmodel;
+
+    // Visitor interface
+public:
+    void apply(vsg::ButtonPressEvent &buttonPress) override;
 };
 
 #endif // CONTENTMANAGER_H

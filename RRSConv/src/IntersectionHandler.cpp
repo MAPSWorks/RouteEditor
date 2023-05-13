@@ -7,39 +7,47 @@
 
 #include <vsg/nodes/StateGroup.h>
 #include <vsg/nodes/CullNode.h>
+#include <vsg/nodes/DepthSorted.h>
 
-#include <vsg/traversals/ComputeBounds.h>
+#include <vsg/utils/ComputeBounds.h>
 #include <vsg/maths/transform.h>
 #include <vsg/nodes/MatrixTransform.h>
 
-#include "move-animation.h"
-#include "rotate-animation.h"
-#include "alpha-animation.h"
-#include "light-animation.h"
-#include "animation-path-handler.h"
+#include <vsg/app/Viewer.h>
+
+#include "animation-common.h"
+
+#include "LambdaVisitor.h"
 
 #include "filesystem.h"
 
-IntersectionHandler::IntersectionHandler(vsg::ref_ptr<vsg::Group> scenegraph, vsg::ref_ptr<AnimatedModel> model, QWidget *parent) :
+IntersectionHandler::IntersectionHandler(vsg::ref_ptr<vsg::Group> scenegraph, vsg::ref_ptr<route::AnimatedObject> model, vsg::ref_ptr<vsg::Viewer> viewer, QWidget *parent) :
     QWidget(parent),
     ui(new Ui::IntersectionHandler),
     _scenegraph(scenegraph),
-    _selected(vsg::MatrixTransform::create())
+    _selected(vsg::MatrixTransform::create()),
+    _viewer(viewer)
 {
     ui->setupUi(this);
 
     _model = new AnimationModel(model, this);
+    ui->listView->setModel(_model);
 
     connect(ui->addButt, &QPushButton::pressed, this, &IntersectionHandler::add);
     connect(ui->startButt, &QPushButton::pressed, this, &IntersectionHandler::start);
     connect(ui->baseButt, &QPushButton::pressed, this, &IntersectionHandler::addBase);
-    connect(ui->resetButt, &QPushButton::pressed, this, &IntersectionHandler::reset);
-    connect(ui->upButt, &QPushButton::pressed, this, &IntersectionHandler::up);
-    connect(ui->downButt, &QPushButton::pressed, this, &IntersectionHandler::down);
+    connect(ui->removeButt, &QPushButton::pressed, this, &IntersectionHandler::remove);
+    connect(ui->upButt, &QPushButton::pressed, this, &IntersectionHandler::down);
+    connect(ui->downButt, &QPushButton::pressed, this, &IntersectionHandler::up);
     connect(ui->moveButt, &QPushButton::pressed, this, [this]{ _type = Move; });
     connect(ui->alphaButt, &QPushButton::pressed, this, [this]{ _type = Alpha; });
     connect(ui->rotButt, &QPushButton::pressed, this, [this]{ _type = Rot; });
     connect(ui->illumButt, &QPushButton::pressed, this, [this]{ _type = Light; });
+
+    connect(ui->listView, &QListView::clicked, this, [this](const QModelIndex &index)
+    {
+        _animation = _model->animationIndex(index);
+    });
 }
 
 
@@ -93,31 +101,91 @@ void IntersectionHandler::add()
     auto path = model.append(name);
     auto out = contentRoot.append("data").append("animations").append(path);
 
+    auto duration = ui->durationSpin->value();
+
+    vsg::ref_ptr<Animation> animation;
+
     switch (_type) {
     case IntersectionHandler::Move:
     {
-        _animation = MoveAnimation<Animation>::create(node, path,
-                                                      vsg::dvec3(ui->x1->value(), ui->y1->value(), ui->z1->value()),
-                                                      vsg::dvec3(ui->x2->value(), ui->y2->value(), ui->z2->value()), ui->durationSpin->value());
+        vsg::dvec3 min{ui->x1->value(), ui->y1->value(), ui->z1->value()};
+        vsg::dvec3 max{ui->x2->value(), ui->y2->value(), ui->z2->value()};
+        //animation = MoveAnimation<Animation>::create(node, path, min, max, duration);
         break;
     }
     case IntersectionHandler::Rot:
+    {
+        auto quat1 = route::toQuaternion(qDegreesToRadians(ui->xr1->value()), qDegreesToRadians(ui->yr1->value()), qDegreesToRadians(ui->zr1->value()));
+        auto quat2 = route::toQuaternion(qDegreesToRadians(ui->xr2->value()), qDegreesToRadians(ui->yr2->value()), qDegreesToRadians(ui->zr2->value()));
+        //animation = RotateAnimation<Animation>::create(node, path, quat1, quat2, duration);
         break;
+    }
     case IntersectionHandler::Light:
+    {
+        vsg::ref_ptr<vsg::Light> found;
+        auto findLight = [name=ui->illumEdit->text().toStdString(), &found](vsg::Light& light)
+        {
+            if(name == light.name)
+                found = &light;
+        };
+        LambdaVisitor<decltype (findLight), vsg::Light> lv(findLight);
+        _scenegraph->accept(lv);
+
+        auto min = static_cast<float>(ui->illum1->value());
+        auto max = static_cast<float>(ui->illum2->value());
+
+        if(found)
+            //animation = LightAnimation<Animation>::create(found, min, max, duration);
         break;
+    }
     case IntersectionHandler::Alpha:
+    {
+        auto min = static_cast<float>(ui->alpha1->value());
+        auto max = static_cast<float>(ui->alpha2->value());
+
+        auto fdi = vsg::visit<route::FindTexture>(node);
+
+        auto data = fdi.imageInfo->imageView->image->data;
+        data->properties.dataVariance = vsg::DYNAMIC_DATA;
+
+        vsg::StateInfo si;
+        si.blending = true;
+        si.image = data;
+        si.lighting = false;
+
+        //route::assignStateGroup(fdi.imageStateGroup, si, builder->options);
+
+        auto cb = vsg::visit<vsg::ComputeBounds>(node);
+
+        auto depthSorted = vsg::DepthSorted::create();
+        depthSorted->binNumber = 10;
+        depthSorted->bound.center = (cb.bounds.min + cb.bounds.max) * 0.5;
+        depthSorted->bound.radius = vsg::length(cb.bounds.max - cb.bounds.min) * 0.6;
+        depthSorted->child = node;
+
+        //animation = AlphaAnimation<Animation>::create(depthSorted, data, min, max, duration);
         break;
+    }
 
 
     }
-    _animation->matrix = _selected->matrix;
-    _model->addAnimation(ui->nameEdit->text(), _animation);
+    auto result = _viewer->compileManager->compile(animation);
+    if(result.result == VK_SUCCESS)
+        vsg::updateViewer(*_viewer, result);
+
+    ui->listView->selectionModel()->clearSelection();
+
+    animation->matrix = _selected->matrix;
+    _model->addAnimation(ui->nameEdit->text(), animation);
 }
 
 void IntersectionHandler::start()
 {
     if(_animation)
-        _animation->run();
+    {
+        _animation->resetReverse();
+        _animation->resetRun();
+    }
 }
 
 void IntersectionHandler::up()
@@ -147,9 +215,12 @@ void IntersectionHandler::addBase()
     _model->addBase(_selected);
 }
 
-void IntersectionHandler::reset()
+void IntersectionHandler::remove()
 {
-    //_model->children.clear();
+    const auto &selected = ui->listView->selectionModel()->selectedIndexes();
+    if(selected.isEmpty())
+        return;
+    _model->remove(selected.front());
 }
 
 void IntersectionHandler::processSelection()

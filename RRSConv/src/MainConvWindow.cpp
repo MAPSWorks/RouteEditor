@@ -5,7 +5,8 @@
 #include <QColorDialog>
 #include <QErrorMessage>
 #include <QMessageBox>
-//#include "LambdaVisitor.h"
+#include "Constants.h"
+#include "Register.h"
 
 MainWindow::MainWindow( QWidget *parent)
     : QMainWindow(parent)
@@ -18,14 +19,14 @@ MainWindow::MainWindow( QWidget *parent)
 
     //scene = vsg::Group::create();
 
-    /*if (const auto file = QFileDialog::getOpenFileName(this, tr("Загрузить модели"), qgetenv("RRS2_ROOT")); !file.isEmpty())
+    app::registerObjectFactoy();
+
+    if (const auto file = QFileDialog::getOpenFileName(this, tr("Загрузить модели"), qgetenv("RRS2_ROOT")); !file.isEmpty())
     {
         auto model = vsg::read_cast<vsg::Node>(file.toStdString(), options);
         if(model)
             scene->addChild(model);
-    }*/
-    scene->addChild(vsg::read_cast<vsg::Node>("/home/asafr/RRS/objects/trackside/signals/Выходной.dae", options));
-
+    }
 }
 
 vsg::ref_ptr<vsg::Camera> createCameraForScene(vsg::Node* scenegraph, int32_t x, int32_t y, uint32_t width, uint32_t height)
@@ -56,7 +57,7 @@ QWindow* MainWindow::initilizeVSGwindow()
     options = vsg::Options::create();
 
     scene = vsg::Group::create();
-    model = AnimatedModel::create();
+    model = route::AnimatedObject::create();
 
     // add vsgXchange's support for reading and writing 3rd party file formats
     options->add(vsgXchange::all::create());
@@ -64,14 +65,16 @@ QWindow* MainWindow::initilizeVSGwindow()
     auto windowTraits = vsg::WindowTraits::create();
     windowTraits->windowTitle = "vsgQt viewer";
 
-    viewerWindow = new vsgQt::ViewerWindow();
+    _viewerWindow = new vsgQt::ViewerWindow();
 
     // if required set the QWindow's SurfaceType to QSurface::VulkanSurface.
-    viewerWindow->setSurfaceType(QSurface::VulkanSurface);
+    _viewerWindow->setSurfaceType(QSurface::VulkanSurface);
 
-    viewerWindow->traits = windowTraits;
+    _viewerWindow->traits = windowTraits;
 
-    viewerWindow->initializeCallback = [&](vsgQt::ViewerWindow& vw, uint32_t width, uint32_t height)
+    _viewerWindow->viewer = vsg::Viewer::create();
+
+    _viewerWindow->initializeCallback = [&](vsgQt::ViewerWindow& vw, uint32_t width, uint32_t height)
     {
 
         auto& window = vw.windowAdapter;
@@ -79,8 +82,6 @@ QWindow* MainWindow::initilizeVSGwindow()
 
         auto& viewer = vw.viewer;
         if (!viewer) viewer = vsg::Viewer::create();
-
-        vsg::RegisterWithObjectFactoryProxy<route::SceneObject>();
 
         viewer->addWindow(window);
 
@@ -91,7 +92,7 @@ QWindow* MainWindow::initilizeVSGwindow()
 
         // create an RenderinGraph to add an secondary vsg::View on the top right part of the window.
         auto secondary_camera = createCameraForScene(scene, width / 2, 0, width / 2, height);
-        auto secondary_view = vsg::View::create(secondary_camera, model);
+        auto secondary_view = vsg::View::create(secondary_camera, vsg::Node::create());
         secondary_view->addChild(vsg::createHeadlight());
 
         handler->camera = main_camera;
@@ -124,7 +125,7 @@ QWindow* MainWindow::initilizeVSGwindow()
     };
 
     // provide the calls to invokve the vsg::Viewer to render a frame.
-    viewerWindow->frameCallback = [this](vsgQt::ViewerWindow& vw) {
+    _viewerWindow->frameCallback = [this](vsgQt::ViewerWindow& vw) {
 
         if (!vw.viewer || !vw.viewer->advanceToNextFrame()) return false;
 
@@ -139,7 +140,7 @@ QWindow* MainWindow::initilizeVSGwindow()
 
         return true;
     };
-    return viewerWindow;
+    return _viewerWindow;
 }
 /*
 void MainWindow::addObject()
@@ -149,10 +150,10 @@ void MainWindow::addObject()
 */
 void MainWindow::constructWidgets()
 {
-    embedded = QWidget::createWindowContainer(initilizeVSGwindow(), ui->centralsplitter);
-    ui->centralsplitter->addWidget(embedded);
+    _embedded = QWidget::createWindowContainer(initilizeVSGwindow(), ui->centralsplitter);
+    ui->centralsplitter->addWidget(_embedded);
 
-    handler = new IntersectionHandler(scene, model, ui->centralsplitter);
+    handler = new IntersectionHandler(scene, model, _viewerWindow->viewer, ui->centralsplitter);
     ui->centralsplitter->addWidget(handler);
 
     handler->builder = vsg::Builder::create();

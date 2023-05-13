@@ -1,12 +1,10 @@
 #include "Manipulator.h"
-#include "LambdaVisitor.h"
 #include <QSettings>
-#include "undo-redo.h"
 #include "DatabaseManager.h"
-#include "ParentVisitor.h"
+#include "tools.h"
 #include <vsg/nodes/MatrixTransform.h>
 #include <vsg/utils/Builder.h>
-#include <vsg/traversals/ComputeBounds.h>
+#include <vsg/utils/ComputeBounds.h>
 #include <QInputDialog>
 
 Manipulator::Manipulator(vsg::ref_ptr<vsg::Camera> camera,
@@ -29,7 +27,7 @@ Manipulator::~Manipulator()
 
 void Manipulator::createPointer()
 {
-    QSettings settings(app::ORGANIZATION_NAME, app::APPLICATION_NAME);
+    QSettings settings(app::ORGANIZATION_NAME, app::APP_NAME);
 
     auto size = static_cast<float>(settings.value("CURSORSIZE", 1).toInt());
     vsg::GeometryInfo info;
@@ -41,11 +39,7 @@ void Manipulator::createPointer()
     auto cone = _database->builder->createCone(info);
     _pointer->addChild(cone);
 }
-
-void Manipulator::setMask(uint32_t mask)
-{
-    _mask = mask;
-}
+/*
 void Manipulator::apply(vsg::KeyPressEvent& keyPress)
 {
      _keyModifier = keyPress.keyModifier;
@@ -66,7 +60,7 @@ void Manipulator::apply(vsg::KeyReleaseEvent& keyRelease)
 {
      _keyModifier &= !keyRelease.keyModifier;
 }
-
+*/
 void Manipulator::apply(vsg::ButtonPressEvent& buttonPress)
 {
     if (buttonPress.handled) return;
@@ -74,29 +68,17 @@ void Manipulator::apply(vsg::ButtonPressEvent& buttonPress)
     _hasFocus = withinRenderArea(buttonPress);
     _lastPointerEventWithinRenderArea = _hasFocus;
 
-    if (buttonPress.mask & vsg::BUTTON_MASK_1)
-    {
-        _updateMode = INACTIVE;
-        if(_isMoving)
-        {
-            _database->undoStack->endMacro();
-            _isMoving = false;
-        }
-        else
-            emit sendIntersection(intersectedObjects(_mask, buttonPress));
-    } else if (buttonPress.mask & vsg::BUTTON_MASK_2)
+    if (buttonPress.mask & vsg::BUTTON_MASK_2)
         _updateMode = ROTATE;
-    else if (buttonPress.mask & vsg::BUTTON_MASK_3 && _ellipsoidModel)
+    else if (buttonPress.mask & vsg::BUTTON_MASK_3)
     {
         _updateMode = INACTIVE;
 
-        auto isection = intersectedObjects(route::Tiles, buttonPress);
-        if(isection.tile == nullptr)
+        auto isections = route::testIntersections(buttonPress, _database->root, _camera);
+        if(isections.empty())
             return;
-        setViewpoint(isection.intersection->worldIntersection);
-        //FindPositionVisitor fpv(isection.tile.first);
-        //auto model = _database->getTilesModel();
-        //emit objectClicked(model->index(fpv(model->getRoot()), 0, QModelIndex()));
+
+        setViewpoint(isections.front()->worldIntersection);
     } else
         _updateMode = INACTIVE;
 
@@ -120,72 +102,16 @@ void Manipulator::rotate(double angle, const vsg::dvec3& axis)
     _lookAt->up = normalize(matrix * (_lookAt->eye + _lookAt->up) - matrix * _lookAt->eye);
     _lookAt->center = matrix * _lookAt->center;
     _lookAt->eye = matrix * _lookAt->eye;
-
-    //clampToGlobe();
 }
 
 void Manipulator::zoom(double ratio)
 {
     vsg::dvec3 lookVector = _lookAt->center - _lookAt->eye;
     _lookAt->eye = _lookAt->eye + lookVector * ratio;
-
-    //clampToGlobe();
 }
 
 void Manipulator::pan(const vsg::dvec2& delta)
 {
-    /*
-    vsg::dvec3 lookVector = _lookAt->center - _lookAt->eye;
-    vsg::dvec3 lookNormal = vsg::normalize(lookVector);
-    vsg::dvec3 upNormal = _lookAt->up;
-    vsg::dvec3 sideNormal = vsg::cross(lookNormal, upNormal);
-
-    double distance = length(lookVector);
-    distance *= 0.25; // TODO use Camera project matrix to guide how much to scale
-
-    if (_ellipsoidModel)
-    {
-        double scale = distance;
-        double angle = (length(delta) * scale) / _ellipsoidModel->radiusEquator();
-
-        if (angle != 0.0)
-        {
-            vsg::dvec3 globeNormal = normalize(_lookAt->center);
-            vsg::dvec3 m = upNormal * (-delta.y) + sideNormal * (delta.x); // compute the position relative to the center in the eye plane
-            vsg::dvec3 v = m + lookNormal * dot(m, globeNormal);           // compensate for any tile relative to the globenormal
-            vsg::dvec3 axis = normalize(cross(globeNormal, v));            // compute the axis of rotation to map the mouse pan
-
-            vsg::dmat4 matrix = vsg::rotate(-angle, axis);
-
-            _lookAt->up = normalize(matrix * (_lookAt->eye + _lookAt->up) - matrix * _lookAt->eye);
-            _lookAt->center = matrix * _lookAt->center;
-            _lookAt->eye = matrix * _lookAt->eye;void Manipulator::addWireframe(const QModelIndex &index, const vsg::Node *node, vsg::dmat4 ltw)
-{
-    vsg::ComputeBounds cb;
-    node->accept(cb);
-
-    vsg::dvec3 centre = ltw * ((cb.bounds.min + cb.bounds.max) * 0.5);
-    //setViewpoint(centre);
-
-    auto matrix = vsg::translate(centre) * vsg::scale(cb.bounds.max - cb.bounds.min) *
-            vsg::rotate(vsg::dquat(vsg::dvec3(0.0, 0.0, -1.0), vsg::normalize(centre)));
-    auto transform = vsg::MatrixTransform::create(matrix);
-    transform->addChild(_compiledWireframe);
-    _wireframes->children.push_back(transform);
-    _selectedObjects.insert(std::make_pair(index, _wireframes->children.end()));
-}
-
-            //clampToGlobe();
-        }
-    }
-    else
-    {
-        vsg::dvec3 translation = sideNormal * (-delta.x * distance) + upNormal * (delta.y * distance);
-
-        _lookAt->eye = _lookAt->eye + translation;
-        _lookAt->center = _lookAt->center + translation;
-    }
-    */
 }
 
 
@@ -219,24 +145,11 @@ void Manipulator::moveToObject(const QModelIndex &index)
     if(!index.isValid())
         return;
 
-    auto object = static_cast<vsg::Node*>(index.internalPointer());
-    Q_ASSERT(object);
-
-    if(auto sceneobject = object->cast<route::SceneObject>(); sceneobject)
-    {
-        setViewpoint(sceneobject->getWorldPosition());
-        return;
-    }
-    ParentTracer pt;
-    object->accept(pt);
-    auto ltw = vsg::computeTransform(pt.nodePath);
-
-    vsg::ComputeBounds computeBounds;
-    object->accept(computeBounds);
-    vsg::dvec3 centre = (computeBounds.bounds.min + computeBounds.bounds.max) * 0.5;
-    setViewpoint(ltw * centre);
+    auto object = static_cast<route::MVCObject*>(index.internalPointer());
+    auto pos = object->getWorldTransform()[3];
+    setViewpoint(pos);
 }
-
+/*
 void Manipulator::setFirst(vsg::ref_ptr<route::SceneObject> firstObject)
 {
     _movingObject = firstObject;
@@ -249,87 +162,34 @@ void Manipulator::startMoving()
         _database->undoStack->beginMacro(tr("Перемещены объекты"));
     }
 }
-
+*/
+/*
 void Manipulator::apply(vsg::MoveEvent &pointerEvent)
 {
-    Trackball::apply(pointerEvent);
+    if(!_isMoving || !_movingObject)
+    {
+        Trackball::apply(pointerEvent);
+        _previousPointerEvent = &pointerEvent;
+        return;
+    }
+
+    auto isections = route::testIntersections(pointerEvent, _database->root, _camera);
+    if(isections.empty())
+        return;
+    auto isectionPrev = isections.front();
+
+    isections = route::testIntersections(pointerEvent, _database->root, _camera);
+    if(isections.empty())
+        return;
+    auto isection = isections.front();
+
+    vsg::dvec3 delta;
+
+    delta = isection->worldIntersection - isectionPrev->worldIntersection;
+
+    emit sendMovingDelta(delta);
 
     _previousPointerEvent = &pointerEvent;
 
-    if(!_isMoving || !_movingObject)
-        return;
-
-
-        auto isections = intersections(route::Tiles, pointerEvent);
-        if(isections.empty())
-            return;
-        auto isection = isections.front();
-
-        vsg::dvec3 delta;
-
-        delta = isection->worldIntersection - _movingObject->getWorldPosition();
-
-        emit sendMovingDelta(delta);
-        /*
-    case MovingAxis::X:
-    {
-        auto delta = (pointerEvent.y - _previousPointerEvent->y) / 4;
-        auto quat = _movingObject->getWorldRotation();
-
-        auto rotated = vsg::inverse(vsg::rotate(quat)) * vsg::dvec3(delta, 0.0, 0.0);
-
-        emit sendMovingDelta(rotated);
-    }
-    case MovingAxis::Y:
-    {
-        auto delta = (pointerEvent.y - _previousPointerEvent->y) / 4;
-        auto quat = _movingObject->getWorldRotation();
-
-        auto rotated = route::mult(quat, vsg::dvec3(0.0, delta, 0.0));
-
-        emit sendMovingDelta(rotated);
-    }
-    case MovingAxis::Z:
-    {
-        auto delta = (pointerEvent.y - _previousPointerEvent->y) / 4;
-        auto quat = _movingObject->getWorldRotation();
-
-        auto rotated = route::mult(quat, vsg::dvec3(0.0, 0.0, delta));
-
-        emit sendMovingDelta(rotated);
-    }
-
-    }
-    */
-
 }
-
-FindNode Manipulator::intersectedObjects(vsg::LineSegmentIntersector::Intersections isections)
-{
-    if(isections.empty())
-        return FindNode();
-    FindNode fn(isections.front());
-    fn.keyModifier = _keyModifier;
-    return fn;
-}
-
-FindNode Manipulator::intersectedObjects(uint32_t mask, const vsg::PointerEvent &pointerEvent)
-{
-    return intersectedObjects(intersections(mask, pointerEvent));
-}
-
-vsg::LineSegmentIntersector::Intersections Manipulator::intersections(uint32_t mask, const vsg::PointerEvent& pointerEvent)
-{
-    auto intersector = vsg::LineSegmentIntersector::create(*_camera, pointerEvent.x, pointerEvent.y);
-    intersector->traversalMask = mask;
-    _database->tilesModel->getRoot()->accept(*intersector);
-
-    if (intersector->intersections.empty()) return vsg::LineSegmentIntersector::Intersections();
-
-    // sort the intersectors front to back
-    std::sort(intersector->intersections.begin(), intersector->intersections.end(), [](auto lhs, auto rhs) { return lhs->ratio < rhs->ratio; });
-
-    //_lastIntersection = fn;
-
-    return intersector->intersections;
-}
+*/
